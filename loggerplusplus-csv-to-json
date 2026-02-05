@@ -1,0 +1,295 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Logger++ CSV to JSON Converter - ALL IN ONE
+Detecta problemas e converte automaticamente
+
+Uso: python convert.py <arquivo.csv> [arquivo_saida.json]
+"""
+
+import csv
+import json
+import sys
+import os
+from typing import Dict, List, Any
+
+
+# Header oficial do Logger++
+LOGGER_HEADER = "Entry.Tool,Entry.Tags,Entry.InScope,Entry.ListenInterface,Entry.ClientIP,Request.AsBase64,Request.Headers,Request.Body,Request.BodyLength,Request.Time,Request.Length,Request.Tool,Request.Comment,Request.Complete,Request.URL,Request.Method,Request.Path,Request.Query,Request.PathQuery,Request.Protocol,Request.IsSSL,Request.UsesCookieJar,Request.Hostname,Request.Host,Request.Port,Request.ContentType,Request.RequestHttpVersion,Request.Extension,Request.Referrer,Request.HasParams,Request.HasGetParam,Request.HasPostParam,Request.HasSentCookies,Request.CookieString,Request.ParameterCount,Request.Parameters,Request.Origin,Response.AsBase64,Response.Headers,Response.Body,Response.BodyLength,Response.hash,Response.Time,Response.Length,Response.Redirect,Response.Status,Response.StatusText,Response.ResponseHttpVersion,Response.RTT,Response.Title,Response.ContentType,Response.Type,Response.MimeType,Response.HasSetCookies,Response.Cookies,Response.ReflectedParams,Response.Reflections"
+
+
+def parse_boolean(value: str) -> bool:
+    """Converte strings para booleanos"""
+    if not value:
+        return False
+    value_clean = value.strip().lower()
+    return value_clean in ('true', 'yes', '1')
+
+
+def parse_number(value: str) -> Any:
+    """Tenta converter para número"""
+    if not value or value.strip().lower() in ('null', 'none', ''):
+        return 0
+    try:
+        value = value.strip()
+        if '.' not in value:
+            return int(value)
+        return float(value)
+    except ValueError:
+        return 0
+
+
+def parse_array(value: str) -> List:
+    """Converte strings que representam arrays"""
+    if not value or value.strip() == '[]':
+        return []
+    try:
+        return json.loads(value.strip())
+    except:
+        return []
+
+
+def safe_get(row: Dict, key: str, default: Any = '') -> Any:
+    """Pega valor do dicionário com fallback seguro"""
+    value = row.get(key, default)
+    return value if value is not None else default
+
+
+def convert_timestamp(csv_timestamp: str) -> str:
+    """Converte timestamp do CSV para formato do JSON"""
+    if not csv_timestamp or csv_timestamp.lower() == 'null':
+        return ""
+    
+    try:
+        parts = csv_timestamp.split()
+        if len(parts) >= 5:
+            month = parts[1]
+            day = parts[2].lstrip('0')
+            time_str = parts[3]
+            year = parts[5] if len(parts) > 5 else parts[4]
+            
+            hour, minute, second = time_str.split(':')
+            hour_int = int(hour)
+            am_pm = 'AM' if hour_int < 12 else 'PM'
+            if hour_int > 12:
+                hour_int -= 12
+            elif hour_int == 0:
+                hour_int = 12
+            
+            return f"{month} {day}, {year}, {hour_int}:{minute}:{second} {am_pm}"
+    except:
+        return csv_timestamp
+    
+    return csv_timestamp
+
+
+def detect_encoding(file_path: str) -> str:
+    """Detecta encoding do arquivo"""
+    for encoding in ['utf-8', 'utf-8-sig', 'latin-1', 'iso-8859-1', 'cp1252']:
+        try:
+            with open(file_path, 'r', encoding=encoding) as f:
+                f.readline()
+                return encoding
+        except:
+            continue
+    return 'utf-8'
+
+
+def check_and_fix_header(csv_file: str) -> str:
+    """Verifica se CSV tem header e corrige se necessário"""
+    encoding = detect_encoding(csv_file)
+    
+    with open(csv_file, 'r', encoding=encoding) as f:
+        first_line = f.readline()
+    
+    # Verifica se tem header
+    if 'Entry.Tool' in first_line:
+        return csv_file
+    
+    # Precisa adicionar header
+    print("[!] CSV sem header detectado! Corrigindo...")
+    temp_file = csv_file + '.tmp'
+    
+    with open(csv_file, 'r', encoding=encoding) as fin:
+        with open(temp_file, 'w', encoding='utf-8') as fout:
+            fout.write(LOGGER_HEADER + '\n')
+            for line in fin:
+                fout.write(line)
+    
+    return temp_file
+
+
+def convert_csv_to_json(csv_file: str, json_file: str = None) -> str:
+    """Converte CSV para JSON"""
+    if json_file is None:
+        base_name = os.path.splitext(csv_file)[0]
+        json_file = f"{base_name}.json"
+    
+    # Verifica e corrige header se necessário
+    working_file = check_and_fix_header(csv_file)
+    is_temp = working_file != csv_file
+    
+    encoding = detect_encoding(working_file)
+    print(f"[*] Encoding: {encoding}")
+    print(f"[*] Processando: {working_file}")
+    
+    file_size = os.path.getsize(working_file)
+    print(f"[*] Tamanho: {file_size / (1024*1024):.2f} MB")
+    
+    entries = []
+    
+    try:
+        with open(working_file, 'r', encoding=encoding, newline='', errors='replace') as f:
+            reader = csv.DictReader(f, quoting=csv.QUOTE_MINIMAL)
+            
+            if not reader.fieldnames or 'Entry.Tool' not in reader.fieldnames:
+                raise ValueError("CSV inválido ou sem header correto!")
+            
+            total = 0
+            processed = 0
+            errors = 0
+            
+            for row_num, row in enumerate(reader, start=2):
+                total += 1
+                
+                if total % 10000 == 0:
+                    print(f"[*] Processadas {total} linhas ({processed} válidas, {errors} erros)...")
+                
+                try:
+                    if not any(row.values()):
+                        errors += 1
+                        continue
+                    
+                    entry = {
+                        "Entry": {
+                            "Tool": safe_get(row, 'Entry.Tool'),
+                            "Tags": parse_array(safe_get(row, 'Entry.Tags', '[]')),
+                            "InScope": parse_boolean(safe_get(row, 'Entry.InScope', 'false')),
+                            "ListenInterface": safe_get(row, 'Entry.ListenInterface'),
+                            "ClientIP": safe_get(row, 'Entry.ClientIP')
+                        },
+                        "Request": {
+                            "AsBase64": safe_get(row, 'Request.AsBase64'),
+                            "Headers": safe_get(row, 'Request.Headers'),
+                            "Body": safe_get(row, 'Request.Body'),
+                            "BodyLength": parse_number(safe_get(row, 'Request.BodyLength', '0')),
+                            "Time": convert_timestamp(safe_get(row, 'Request.Time')),
+                            "Length": parse_number(safe_get(row, 'Request.Length', '0')),
+                            "Tool": safe_get(row, 'Request.Tool'),
+                            "Complete": parse_boolean(safe_get(row, 'Request.Complete', 'false')),
+                            "URL": safe_get(row, 'Request.URL'),
+                            "Method": safe_get(row, 'Request.Method'),
+                            "Path": safe_get(row, 'Request.Path'),
+                            "PathQuery": safe_get(row, 'Request.PathQuery'),
+                            "Protocol": safe_get(row, 'Request.Protocol'),
+                            "IsSSL": parse_boolean(safe_get(row, 'Request.IsSSL', 'false')),
+                            "UsesCookieJar": safe_get(row, 'Request.UsesCookieJar'),
+                            "Hostname": safe_get(row, 'Request.Hostname'),
+                            "Host": safe_get(row, 'Request.Host'),
+                            "Port": parse_number(safe_get(row, 'Request.Port', '80')),
+                            "ContentType": safe_get(row, 'Request.ContentType'),
+                            "RequestHttpVersion": safe_get(row, 'Request.RequestHttpVersion'),
+                            "Extension": safe_get(row, 'Request.Extension'),
+                            "Referrer": safe_get(row, 'Request.Referrer'),
+                            "HasParams": parse_boolean(safe_get(row, 'Request.HasParams', 'false')),
+                            "HasGetParam": parse_boolean(safe_get(row, 'Request.HasGetParam', 'false')),
+                            "HasPostParam": parse_boolean(safe_get(row, 'Request.HasPostParam', 'false')),
+                            "HasSentCookies": parse_boolean(safe_get(row, 'Request.HasSentCookies', 'false')),
+                            "CookieString": safe_get(row, 'Request.CookieString'),
+                            "ParameterCount": parse_number(safe_get(row, 'Request.ParameterCount', '0')),
+                            "Parameters": parse_array(safe_get(row, 'Request.Parameters', '[]')),
+                            "Origin": safe_get(row, 'Request.Origin')
+                        },
+                        "Response": {
+                            "AsBase64": safe_get(row, 'Response.AsBase64'),
+                            "Headers": safe_get(row, 'Response.Headers'),
+                            "Body": safe_get(row, 'Response.Body'),
+                            "BodyLength": parse_number(safe_get(row, 'Response.BodyLength', '0')),
+                            "hash": safe_get(row, 'Response.hash'),
+                            "Time": convert_timestamp(safe_get(row, 'Response.Time')),
+                            "Length": parse_number(safe_get(row, 'Response.Length', '0')),
+                            "Status": parse_number(safe_get(row, 'Response.Status', '0')),
+                            "StatusText": safe_get(row, 'Response.StatusText'),
+                            "ResponseHttpVersion": safe_get(row, 'Response.ResponseHttpVersion'),
+                            "RTT": parse_number(safe_get(row, 'Response.RTT', '0')),
+                            "Title": safe_get(row, 'Response.Title'),
+                            "ContentType": safe_get(row, 'Response.ContentType'),
+                            "Type": safe_get(row, 'Response.Type'),
+                            "MimeType": safe_get(row, 'Response.MimeType'),
+                            "HasSetCookies": parse_boolean(safe_get(row, 'Response.HasSetCookies', 'false')),
+                            "Cookies": parse_array(safe_get(row, 'Response.Cookies', '[]')),
+                            "ReflectedParams": parse_array(safe_get(row, 'Response.ReflectedParams', '[]')),
+                            "Reflections": parse_number(safe_get(row, 'Response.Reflections', '0'))
+                        }
+                    }
+                    
+                    if entry['Request']['URL'] or entry['Entry']['Tool']:
+                        entries.append(entry)
+                        processed += 1
+                    else:
+                        errors += 1
+                
+                except Exception as e:
+                    errors += 1
+                    if errors <= 5:
+                        print(f"[!] Erro na linha {row_num}: {e}")
+    
+    finally:
+        # Remove arquivo temporário se criado
+        if is_temp and os.path.exists(working_file):
+            os.remove(working_file)
+    
+    print(f"\n[+] Total: {total} linhas")
+    print(f"[+] Processadas: {processed} entries")
+    print(f"[+] Erros/vazias: {errors} linhas")
+    
+    if processed == 0:
+        raise ValueError("Nenhuma entry válida processada!")
+    
+    # Salva JSON
+    print(f"[*] Salvando: {json_file}")
+    with open(json_file, 'w', encoding='utf-8') as f:
+        json.dump(entries, f, ensure_ascii=False, separators=(',', ':'))
+    
+    output_size = os.path.getsize(json_file)
+    print(f"[+] JSON criado: {output_size / (1024*1024):.2f} MB")
+    
+    return json_file
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Logger++ CSV to JSON Converter")
+        print("\nUso: python convert.py <arquivo.csv> [saida.json]")
+        print("\nRecursos:")
+        print("  ✓ Detecta e corrige CSV sem header automaticamente")
+        print("  ✓ Detecta encoding automaticamente")
+        print("  ✓ Trata erros e linhas vazias")
+        print("  ✓ Formato 100% compatível com Logger++")
+        sys.exit(1)
+    
+    csv_file = sys.argv[1]
+    json_file = sys.argv[2] if len(sys.argv) > 2 else None
+    
+    if not os.path.exists(csv_file):
+        print(f"[!] Arquivo não encontrado: {csv_file}")
+        sys.exit(1)
+    
+    try:
+        output = convert_csv_to_json(csv_file, json_file)
+        print(f"\n{'='*60}")
+        print(f"✓ SUCESSO!")
+        print(f"{'='*60}")
+        print(f"\nImportar no Burp Suite:")
+        print(f"  Logger++ → Import → {output}")
+    except Exception as e:
+        print(f"\n{'='*60}")
+        print(f"✗ ERRO: {e}")
+        print(f"{'='*60}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
