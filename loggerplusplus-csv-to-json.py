@@ -13,6 +13,9 @@ import sys
 import os
 from typing import Dict, List, Any
 
+# Aumenta o limite de tamanho de campo CSV para 10MB (para responses grandes)
+csv.field_size_limit(10 * 1024 * 1024)
+
 
 # Header oficial do Logger++
 LOGGER_HEADER = "Entry.Tool,Entry.Tags,Entry.InScope,Entry.ListenInterface,Entry.ClientIP,Request.AsBase64,Request.Headers,Request.Body,Request.BodyLength,Request.Time,Request.Length,Request.Tool,Request.Comment,Request.Complete,Request.URL,Request.Method,Request.Path,Request.Query,Request.PathQuery,Request.Protocol,Request.IsSSL,Request.UsesCookieJar,Request.Hostname,Request.Host,Request.Port,Request.ContentType,Request.RequestHttpVersion,Request.Extension,Request.Referrer,Request.HasParams,Request.HasGetParam,Request.HasPostParam,Request.HasSentCookies,Request.CookieString,Request.ParameterCount,Request.Parameters,Request.Origin,Response.AsBase64,Response.Headers,Response.Body,Response.BodyLength,Response.hash,Response.Time,Response.Length,Response.Redirect,Response.Status,Response.StatusText,Response.ResponseHttpVersion,Response.RTT,Response.Title,Response.ContentType,Response.Type,Response.MimeType,Response.HasSetCookies,Response.Cookies,Response.ReflectedParams,Response.Reflections"
@@ -110,12 +113,17 @@ def check_and_fix_header(csv_file: str) -> str:
     print("[!] CSV sem header detectado! Corrigindo...")
     temp_file = csv_file + '.tmp'
     
+    line_count = 0
     with open(csv_file, 'r', encoding=encoding) as fin:
         with open(temp_file, 'w', encoding='utf-8') as fout:
             fout.write(LOGGER_HEADER + '\n')
             for line in fin:
                 fout.write(line)
+                line_count += 1
+                if line_count % 50000 == 0:
+                    print(f"[*] Preparando CSV: {line_count} linhas...")
     
+    print(f"[+] Header adicionado ({line_count} linhas)")
     return temp_file
 
 
@@ -123,6 +131,8 @@ def convert_csv_to_json(csv_file: str, json_file: str = None) -> str:
     """Converte CSV para JSON"""
     if json_file is None:
         base_name = os.path.splitext(csv_file)[0]
+        # Remove .tmp se existir
+        base_name = base_name.replace('.tmp', '')
         json_file = f"{base_name}.json"
     
     # Verifica e corrige header se necessário
@@ -131,7 +141,7 @@ def convert_csv_to_json(csv_file: str, json_file: str = None) -> str:
     
     encoding = detect_encoding(working_file)
     print(f"[*] Encoding: {encoding}")
-    print(f"[*] Processando: {working_file}")
+    print(f"[*] Processando: {os.path.basename(working_file)}")
     
     file_size = os.path.getsize(working_file)
     print(f"[*] Tamanho: {file_size / (1024*1024):.2f} MB")
@@ -153,7 +163,7 @@ def convert_csv_to_json(csv_file: str, json_file: str = None) -> str:
                 total += 1
                 
                 if total % 10000 == 0:
-                    print(f"[*] Processadas {total} linhas ({processed} válidas, {errors} erros)...")
+                    print(f"[*] Processadas {total:,} linhas ({processed:,} válidas, {errors:,} erros)...")
                 
                 try:
                     if not any(row.values()):
@@ -232,22 +242,23 @@ def convert_csv_to_json(csv_file: str, json_file: str = None) -> str:
                 except Exception as e:
                     errors += 1
                     if errors <= 5:
-                        print(f"[!] Erro na linha {row_num}: {e}")
+                        print(f"[!] Erro na linha {row_num}: {str(e)[:100]}")
     
     finally:
         # Remove arquivo temporário se criado
         if is_temp and os.path.exists(working_file):
+            print(f"[*] Removendo arquivo temporário...")
             os.remove(working_file)
     
-    print(f"\n[+] Total: {total} linhas")
-    print(f"[+] Processadas: {processed} entries")
-    print(f"[+] Erros/vazias: {errors} linhas")
+    print(f"\n[+] Total: {total:,} linhas")
+    print(f"[+] Processadas: {processed:,} entries")
+    print(f"[+] Erros/vazias: {errors:,} linhas")
     
     if processed == 0:
         raise ValueError("Nenhuma entry válida processada!")
     
     # Salva JSON
-    print(f"[*] Salvando: {json_file}")
+    print(f"[*] Salvando JSON: {os.path.basename(json_file)}")
     with open(json_file, 'w', encoding='utf-8') as f:
         json.dump(entries, f, ensure_ascii=False, separators=(',', ':'))
     
@@ -264,6 +275,7 @@ def main():
         print("\nRecursos:")
         print("  ✓ Detecta e corrige CSV sem header automaticamente")
         print("  ✓ Detecta encoding automaticamente")
+        print("  ✓ Suporta campos grandes (até 10MB)")
         print("  ✓ Trata erros e linhas vazias")
         print("  ✓ Formato 100% compatível com Logger++")
         sys.exit(1)
@@ -276,12 +288,14 @@ def main():
         sys.exit(1)
     
     try:
+        print(f"\nLogger++ CSV → JSON Converter")
+        print(f"{'='*60}")
         output = convert_csv_to_json(csv_file, json_file)
         print(f"\n{'='*60}")
         print(f"✓ SUCESSO!")
         print(f"{'='*60}")
         print(f"\nImportar no Burp Suite:")
-        print(f"  Logger++ → Import → {output}")
+        print(f"  Logger++ → Import → {os.path.basename(output)}")
     except Exception as e:
         print(f"\n{'='*60}")
         print(f"✗ ERRO: {e}")
